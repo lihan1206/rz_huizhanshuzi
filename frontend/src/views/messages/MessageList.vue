@@ -18,6 +18,7 @@
         <a-select-option :value="0">未读</a-select-option>
         <a-select-option :value="1">已读</a-select-option>
       </a-select>
+      <a-input v-model:value="query.keyword" placeholder="标题/内容关键词" allow-clear style="width:220px" @change="search" />
       <a-button type="primary" @click="search"><SearchOutlined /></a-button>
     </div>
 
@@ -44,7 +45,7 @@
             </a-list-item-meta>
             <template #actions>
               <a-button size="small" @click="markRead(item)" v-if="!item.is_read">标为已读</a-button>
-              <a-button size="small" danger @click="confirmDelete(item)"><DeleteOutlined /></a-button>
+              <a-button size="small" danger @click="confirmDelete(item)" v-if="authStore.isAdminOrOperator"><DeleteOutlined /></a-button>
             </template>
           </a-list-item>
         </template>
@@ -99,7 +100,7 @@ const modalOpen = ref(false)
 const submitting = ref(false)
 const formRef = ref()
 const msgTypes = ['系统通知', '参展提醒', '支付提醒', '展位调整', '其他']
-const query = reactive({ type: undefined as string | undefined, is_read: undefined as number | undefined, page: 1, pageSize: 10 })
+const query = reactive({ type: undefined as string | undefined, is_read: undefined as number | undefined, keyword: '', page: 1, pageSize: 10 })
 const pagination = reactive({ current: 1, pageSize: 10, total: 0, showSizeChanger: true, showTotal: (t: number) => `共 ${t} 条` })
 const form = reactive({ title: '', content: '', type: '系统通知', target_role: undefined as string | undefined, expo_id: undefined as number | undefined })
 

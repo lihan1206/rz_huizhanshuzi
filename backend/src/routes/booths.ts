@@ -75,16 +75,43 @@ router.put('/:id', adminOrOperator, async (req: AuthRequest, res: Response) => {
 router.patch('/:id/assign', adminOrOperator, async (req: AuthRequest, res: Response) => {
     try {
         const { exhibitor_id } = req.body;
+        if (!exhibitor_id) {
+            return res.status(400).json({ success: false, message: '请选择要分配的参展商' });
+        }
         const [booth]: any = await db.query('SELECT * FROM booths WHERE id=?', [req.params.id]);
         if (!booth.length) return res.status(404).json({ success: false, message: '展位不存在' });
-        if (booth[0].status === '已分配') {
+        if (booth[0].status === '已分配' && booth[0].exhibitor_id !== Number(exhibitor_id)) {
             return res.status(400).json({ success: false, message: '展位已被分配，请先取消分配' });
         }
+
+        const [exhibitorRows]: any = await db.query(
+            'SELECT id, expo_id, company_name, status FROM exhibitors WHERE id=?',
+            [exhibitor_id]
+        );
+        if (!exhibitorRows.length) return res.status(404).json({ success: false, message: '参展商不存在' });
+
+        const exhibitor = exhibitorRows[0];
+        if (!['已确认', '已缴费'].includes(exhibitor.status)) {
+            return res.status(400).json({ success: false, message: '仅已确认或已缴费参展商可分配展位' });
+        }
+        if (Number(exhibitor.expo_id) !== Number(booth[0].expo_id)) {
+            return res.status(400).json({ success: false, message: '参展商与展位不属于同一会展，无法分配' });
+        }
+
+        const [oldBooth]: any = await db.query(
+            'SELECT id, number FROM booths WHERE exhibitor_id=? AND status=\'已分配\' AND id<>? LIMIT 1',
+            [exhibitor_id, req.params.id]
+        );
+        if (oldBooth.length) {
+            await db.query('UPDATE booths SET exhibitor_id=NULL, status=\'空闲\', updated_at=NOW() WHERE id=?', [oldBooth[0].id]);
+        }
+
         await db.query('UPDATE booths SET exhibitor_id=?, status=\'已分配\', updated_at=NOW() WHERE id=?', [exhibitor_id, req.params.id]);
-        await db.query('UPDATE exhibitors SET booth_number=? WHERE id=?', [booth[0].number, exhibitor_id]);
-        const [ex]: any = await db.query('SELECT company_name FROM exhibitors WHERE id=?', [exhibitor_id]);
-        await logAudit(req, '分配展位', '展位管理', Number(req.params.id), `展位${booth[0].number}分配给${ex[0]?.company_name}`);
-        res.json({ success: true, message: '分配成功' });
+        await db.query('UPDATE exhibitors SET booth_number=?, updated_at=NOW() WHERE id=?', [booth[0].number, exhibitor_id]);
+
+        const switchTip = oldBooth.length ? `（自动释放原展位 ${oldBooth[0].number}）` : '';
+        await logAudit(req, '分配展位', '展位管理', Number(req.params.id), `展位${booth[0].number}分配给${exhibitor.company_name}${switchTip}`);
+        res.json({ success: true, message: `分配成功${switchTip}` });
     } catch (err: any) { res.status(500).json({ success: false, message: err.message }); }
 });
 

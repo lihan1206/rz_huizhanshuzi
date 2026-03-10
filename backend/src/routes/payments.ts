@@ -28,11 +28,84 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     } catch (err: any) { res.status(500).json({ success: false, message: err.message }); }
 });
 
+// 支付与合同运营汇总
+router.get('/summary', async (req: AuthRequest, res: Response) => {
+    try {
+        const { expo_id } = req.query;
+        const payWhere = expo_id ? 'WHERE p.expo_id = ?' : '';
+        const payParams = expo_id ? [expo_id] : [];
+        const contractWhere = expo_id ? 'WHERE c.expo_id = ?' : '';
+        const contractParams = expo_id ? [expo_id] : [];
+
+        const [paymentSummary]: any = await db.query(
+            `SELECT
+                COUNT(*) as total_orders,
+                SUM(p.status='待支付') as pending_orders,
+                SUM(p.status='已支付') as paid_orders,
+                SUM(p.status='已退款') as refunded_orders,
+                COALESCE(SUM(CASE WHEN p.status='已支付' THEN p.amount ELSE 0 END), 0) as paid_amount,
+                COALESCE(SUM(CASE WHEN p.status='待支付' THEN p.amount ELSE 0 END), 0) as pending_amount
+            FROM payments p ${payWhere}`,
+            payParams
+        );
+
+        const [pendingPayments]: any = await db.query(
+            `SELECT p.id, p.order_no, p.amount, p.created_at, ex.company_name as exhibitor_name, e.name as expo_name
+             FROM payments p
+             LEFT JOIN exhibitors ex ON p.exhibitor_id = ex.id
+             LEFT JOIN expos e ON p.expo_id = e.id
+             ${payWhere ? `${payWhere} AND p.status='待支付'` : 'WHERE p.status=\'待支付\''}
+             ORDER BY p.created_at ASC
+             LIMIT 8`,
+            payParams
+        );
+
+        const [contractSummary]: any = await db.query(
+            `SELECT
+                COUNT(*) as total_contracts,
+                SUM(c.status='待签署') as pending_contracts,
+                SUM(c.status='已签署') as signed_contracts
+             FROM contracts c ${contractWhere}`,
+            contractParams
+        );
+
+        const [pendingContracts]: any = await db.query(
+            `SELECT c.id, c.contract_no, c.title, c.created_at, ex.company_name as exhibitor_name, e.name as expo_name
+             FROM contracts c
+             LEFT JOIN exhibitors ex ON c.exhibitor_id = ex.id
+             LEFT JOIN expos e ON c.expo_id = e.id
+             ${contractWhere ? `${contractWhere} AND c.status='待签署'` : 'WHERE c.status=\'待签署\''}
+             ORDER BY c.created_at ASC
+             LIMIT 8`,
+            contractParams
+        );
+
+        res.json({
+            success: true,
+            data: {
+                payments: paymentSummary[0],
+                contracts: contractSummary[0],
+                pendingPayments,
+                pendingContracts,
+            }
+        });
+    } catch (err: any) { res.status(500).json({ success: false, message: err.message }); }
+});
+
 // 创建订单
 router.post('/', adminOrOperator, async (req: AuthRequest, res: Response) => {
     try {
         const { expo_id, exhibitor_id, amount, type, payment_method, note } = req.body;
         if (!amount) return res.status(400).json({ success: false, message: '金额为必填项' });
+        if (expo_id && exhibitor_id) {
+            const [pendingRows]: any = await db.query(
+                'SELECT id FROM payments WHERE expo_id=? AND exhibitor_id=? AND status=\'待支付\' LIMIT 1',
+                [expo_id, exhibitor_id]
+            );
+            if (pendingRows.length) {
+                return res.status(400).json({ success: false, message: '该参展商已有待支付订单，请先处理后再创建' });
+            }
+        }
         const orderNo = `PAY${Date.now()}${uuidv4().slice(0, 6).toUpperCase()}`;
         const [result]: any = await db.query(
             `INSERT INTO payments (order_no, expo_id, exhibitor_id, amount, type, status, payment_method, note) VALUES (?,?,?,?,?,?,?,?)`,
@@ -68,6 +141,48 @@ router.patch('/:id/refund', adminOrOperator, async (req: AuthRequest, res: Respo
         await db.query('UPDATE payments SET status=\'已退款\', updated_at=NOW() WHERE id=?', [req.params.id]);
         await logAudit(req, '订单退款', '支付管理', Number(req.params.id), `订单${rows[0].order_no} 已退款`);
         res.json({ success: true, message: '退款成功' });
+    } catch (err: any) { res.status(500).json({ success: false, message: err.message }); }
+});
+
+// 取消订单（仅待支付）
+router.patch('/:id/cancel', adminOrOperator, async (req: AuthRequest, res: Response) => {
+    try {
+        const [rows]: any = await db.query('SELECT order_no, status FROM payments WHERE id=?', [req.params.id]);
+        if (!rows.length) return res.status(404).json({ success: false, message: '订单不存在' });
+        if (rows[0].status !== '待支付') {
+            return res.status(400).json({ success: false, message: '仅待支付订单可取消' });
+        }
+        await db.query('UPDATE payments SET status=\'已取消\', updated_at=NOW() WHERE id=?', [req.params.id]);
+        await logAudit(req, '取消支付订单', '支付管理', Number(req.params.id), `订单${rows[0].order_no} 已取消`);
+        res.json({ success: true, message: '订单已取消' });
+    } catch (err: any) { res.status(500).json({ success: false, message: err.message }); }
+});
+
+// 催缴提醒
+router.post('/:id/remind', adminOrOperator, async (req: AuthRequest, res: Response) => {
+    try {
+        const [rows]: any = await db.query(
+            `SELECT p.id, p.order_no, p.amount, p.status, p.expo_id, ex.company_name, e.name as expo_name
+             FROM payments p
+             LEFT JOIN exhibitors ex ON p.exhibitor_id = ex.id
+             LEFT JOIN expos e ON p.expo_id = e.id
+             WHERE p.id = ?`,
+            [req.params.id]
+        );
+        if (!rows.length) return res.status(404).json({ success: false, message: '订单不存在' });
+        const order = rows[0];
+        if (order.status !== '待支付') {
+            return res.status(400).json({ success: false, message: '仅待支付订单可发送催缴提醒' });
+        }
+
+        const title = `缴费提醒：${order.order_no}`;
+        const content = `请尽快完成订单 ${order.order_no} 的缴费，金额 ¥${Number(order.amount).toLocaleString()}。参展商：${order.company_name || '未绑定'}${order.expo_name ? `，会展：${order.expo_name}` : ''}。`;
+        await db.query(
+            `INSERT INTO messages (title, content, type, target_role, expo_id, sender_id, is_read) VALUES (?,?,?,?,?,?,0)`,
+            [title, content, '支付提醒', 'exhibitor', order.expo_id || null, req.user!.id]
+        );
+        await logAudit(req, '发送催缴提醒', '支付管理', Number(req.params.id), `订单${order.order_no}`);
+        res.json({ success: true, message: '催缴提醒已发送' });
     } catch (err: any) { res.status(500).json({ success: false, message: err.message }); }
 });
 
@@ -107,13 +222,44 @@ router.post('/contracts', adminOrOperator, async (req: AuthRequest, res: Respons
 // 签署合同
 router.patch('/contracts/:id/sign', adminOrOperator, async (req: AuthRequest, res: Response) => {
     try {
+        const [contractRows]: any = await db.query('SELECT contract_no, title FROM contracts WHERE id=?', [req.params.id]);
+        if (!contractRows.length) return res.status(404).json({ success: false, message: '合同不存在' });
         await db.query('UPDATE contracts SET status=\'已签署\', signed_at=NOW() WHERE id=?', [req.params.id]);
         // 更新参展商合同状态
         const [rows]: any = await db.query('SELECT exhibitor_id FROM contracts WHERE id=?', [req.params.id]);
         if (rows[0]?.exhibitor_id) {
             await db.query('UPDATE exhibitors SET contract_signed=1 WHERE id=?', [rows[0].exhibitor_id]);
         }
+        await logAudit(req, '签署合同', '合同管理', Number(req.params.id), contractRows[0].contract_no || contractRows[0].title || '');
         res.json({ success: true, message: '合同签署成功' });
+    } catch (err: any) { res.status(500).json({ success: false, message: err.message }); }
+});
+
+// 催签提醒
+router.post('/contracts/:id/remind', adminOrOperator, async (req: AuthRequest, res: Response) => {
+    try {
+        const [rows]: any = await db.query(
+            `SELECT c.id, c.contract_no, c.title, c.status, c.expo_id, ex.company_name, e.name as expo_name
+             FROM contracts c
+             LEFT JOIN exhibitors ex ON c.exhibitor_id = ex.id
+             LEFT JOIN expos e ON c.expo_id = e.id
+             WHERE c.id = ?`,
+            [req.params.id]
+        );
+        if (!rows.length) return res.status(404).json({ success: false, message: '合同不存在' });
+        const contract = rows[0];
+        if (contract.status !== '待签署') {
+            return res.status(400).json({ success: false, message: '仅待签署合同可发送催签提醒' });
+        }
+
+        const title = `合同待签提醒：${contract.contract_no || contract.title}`;
+        const content = `请尽快完成合同签署。合同：${contract.title || '-'}（${contract.contract_no || '无编号'}），参展商：${contract.company_name || '未绑定'}${contract.expo_name ? `，会展：${contract.expo_name}` : ''}。`;
+        await db.query(
+            `INSERT INTO messages (title, content, type, target_role, expo_id, sender_id, is_read) VALUES (?,?,?,?,?,?,0)`,
+            [title, content, '系统通知', 'exhibitor', contract.expo_id || null, req.user!.id]
+        );
+        await logAudit(req, '发送催签提醒', '合同管理', Number(req.params.id), contract.contract_no || contract.title || '');
+        res.json({ success: true, message: '催签提醒已发送' });
     } catch (err: any) { res.status(500).json({ success: false, message: err.message }); }
 });
 

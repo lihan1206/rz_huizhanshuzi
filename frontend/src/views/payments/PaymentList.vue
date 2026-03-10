@@ -11,10 +11,13 @@
     <a-row :gutter="12" style="margin-bottom:16px" v-if="payStats">
       <a-col :span="8"><div class="stat-card" style="padding:16px; text-align:center"><div style="font-size:22px; font-weight:700; color:#1677ff">¥{{ Number(payStats.paid_amount || 0).toLocaleString() }}</div><div style="font-size:12px; color:#999">已收金额</div></div></a-col>
       <a-col :span="8"><div class="stat-card" style="padding:16px; text-align:center"><div style="font-size:22px; font-weight:700; color:#fa8c16">¥{{ Number(payStats.pending_amount || 0).toLocaleString() }}</div><div style="font-size:12px; color:#999">待收金额</div></div></a-col>
-      <a-col :span="8"><div class="stat-card" style="padding:16px; text-align:center"><div style="font-size:22px; font-weight:700; color:#666">{{ payStats.total }}</div><div style="font-size:12px; color:#999">订单总数</div></div></a-col>
+      <a-col :span="8"><div class="stat-card" style="padding:16px; text-align:center"><div style="font-size:22px; font-weight:700; color:#666">{{ payStats.pending_orders || 0 }}</div><div style="font-size:12px; color:#999">待支付订单</div></div></a-col>
     </a-row>
 
     <div class="search-area">
+      <a-select v-model:value="query.expo_id" placeholder="所属会展" allow-clear style="width:220px" @change="search">
+        <a-select-option v-for="e in expos" :key="e.id" :value="e.id">{{ e.name }}</a-select-option>
+      </a-select>
       <a-select v-model:value="query.status" placeholder="订单状态" allow-clear style="width:130px" @change="search">
         <a-select-option v-for="s in ['待支付','已支付','已退款','已取消']" :key="s" :value="s">{{ s }}</a-select-option>
       </a-select>
@@ -33,9 +36,11 @@
           </template>
           <template v-if="column.key === 'action'">
             <div class="action-btns">
-              <a-button size="small" type="primary" ghost @click="confirmPay(record)" v-if="record.status === '待支付'">确认收款</a-button>
-              <a-button size="small" @click="confirmRefund(record)" v-if="record.status === '已支付'">退款</a-button>
-              <a-button size="small" danger @click="confirmDelete(record)"><DeleteOutlined /></a-button>
+              <a-button size="small" type="primary" ghost @click="confirmPay(record)" v-if="authStore.isAdminOrOperator && record.status === '待支付'">确认收款</a-button>
+              <a-button size="small" @click="remindPayment(record)" v-if="authStore.isAdminOrOperator && record.status === '待支付'">催缴</a-button>
+              <a-button size="small" danger ghost @click="cancelOrder(record)" v-if="authStore.isAdminOrOperator && record.status === '待支付'">取消订单</a-button>
+              <a-button size="small" @click="confirmRefund(record)" v-if="authStore.isAdminOrOperator && record.status === '已支付'">退款</a-button>
+              <a-button size="small" danger @click="confirmDelete(record)" v-if="authStore.isAdminOrOperator"><DeleteOutlined /></a-button>
             </div>
           </template>
         </template>
@@ -107,7 +112,7 @@ const submitting = ref(false)
 const payRecord = ref<Payment | null>(null)
 const payStats = ref<any>(null)
 const formRef = ref()
-const query = reactive({ status: undefined as string | undefined, keyword: '', page: 1, pageSize: 10 })
+const query = reactive({ expo_id: undefined as number | undefined, status: undefined as string | undefined, keyword: '', page: 1, pageSize: 10 })
 const pagination = reactive({ current: 1, pageSize: 10, total: 0, showSizeChanger: true, showTotal: (t: number) => `共 ${t} 条` })
 const form = reactive({ expo_id: undefined as number | undefined, exhibitor_id: undefined as number | undefined, amount: undefined as number | undefined, type: '展位费', payment_method: '线下', note: '' })
 const payForm = reactive({ payment_method: '线下', invoice_no: '' })
@@ -116,13 +121,14 @@ function statusColor(s: string) { const m: Record<string, string> = { '待支付
 
 const columns = [
   { title: '订单号', dataIndex: 'order_no', width: 200, ellipsis: true },
+  { title: '所属会展', dataIndex: 'expo_name', width: 150, ellipsis: true },
   { title: '参展商', dataIndex: 'exhibitor_name', ellipsis: true },
   { title: '金额', key: 'amount', width: 120 },
   { title: '类型', dataIndex: 'type', width: 90 },
   { title: '状态', key: 'status', width: 90 },
   { title: '支付方式', dataIndex: 'payment_method', width: 90 },
   { title: '创建时间', dataIndex: 'created_at', width: 150, customRender: ({ text }: any) => text?.slice(0,10) },
-  { title: '操作', key: 'action', width: 180, fixed: 'right' },
+  { title: '操作', key: 'action', width: 280, fixed: 'right' },
 ]
 
 async function loadList() {
@@ -134,12 +140,12 @@ async function loadList() {
   } finally { loading.value = false }
 }
 async function loadStats() {
-  const res = await api.get('/statistics/dashboard')
+  const res = await api.get('/payments/summary', { params: { expo_id: query.expo_id } })
   payStats.value = res.data.data.payments
 }
 async function loadExpos() { const res = await api.get('/expos', { params: { pageSize: 100 } }); expos.value = res.data.data.list }
 async function loadExhibitors() { const res = await api.get('/exhibitors', { params: { pageSize: 100 } }); exhibitors.value = res.data.data.list }
-function search() { query.page = 1; pagination.current = 1; loadList() }
+function search() { query.page = 1; pagination.current = 1; loadList(); loadStats() }
 function handleTableChange(p: any) { query.page = p.current; query.pageSize = p.pageSize; pagination.current = p.current; loadList() }
 
 function openModal() { Object.assign(form, { expo_id: undefined, exhibitor_id: undefined, amount: undefined, type: '展位费', payment_method: '线下', note: '' }); modalOpen.value = true }
@@ -166,6 +172,22 @@ function confirmRefund(record: Payment) {
     cancelText: '取消',
     async onOk() { await api.patch(`/payments/${record.id}/refund`); message.success('退款成功'); loadList(); loadStats() },
   })
+}
+
+function cancelOrder(record: Payment) {
+  Modal.confirm({
+    title: '确认取消订单',
+    content: `确定取消待支付订单「${record.order_no}」吗？`,
+    okText: '确认取消',
+    okType: 'danger',
+    cancelText: '取消',
+    async onOk() { await api.patch(`/payments/${record.id}/cancel`, {}); message.success('订单已取消'); loadList(); loadStats() },
+  })
+}
+
+async function remindPayment(record: Payment) {
+  await api.post(`/payments/${record.id}/remind`, {})
+  message.success('催缴提醒已发送')
 }
 
 function confirmDelete(record: Payment) {

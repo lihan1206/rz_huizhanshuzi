@@ -29,6 +29,64 @@
       </a-col>
     </a-row>
 
+    <a-row :gutter="16" style="margin-bottom: 16px">
+      <a-col :xs="24" :lg="14">
+        <a-card title="📝 运营待办中心" :bordered="false">
+          <a-row :gutter="12">
+            <a-col :span="12" :md="6">
+              <div class="stat-card todo-card" @click="router.push('/exhibitors')">
+                <div class="todo-value">{{ todoSummary.pending_exhibitor_review || 0 }}</div>
+                <div class="todo-label">待审核参展商</div>
+              </div>
+            </a-col>
+            <a-col :span="12" :md="6">
+              <div class="stat-card todo-card" @click="router.push('/payments')">
+                <div class="todo-value">{{ todoSummary.pending_payments || 0 }}</div>
+                <div class="todo-label">待支付订单</div>
+              </div>
+            </a-col>
+            <a-col :span="12" :md="6">
+              <div class="stat-card todo-card" @click="router.push('/contracts')">
+                <div class="todo-value">{{ todoSummary.pending_contracts || 0 }}</div>
+                <div class="todo-label">待签署合同</div>
+              </div>
+            </a-col>
+            <a-col :span="12" :md="6">
+              <div class="stat-card todo-card" @click="router.push('/booths')">
+                <div class="todo-value">{{ todoSummary.free_booths_in_ongoing_expo || 0 }}</div>
+                <div class="todo-label">进行中展会空闲展位</div>
+              </div>
+            </a-col>
+          </a-row>
+        </a-card>
+      </a-col>
+      <a-col :xs="24" :lg="10">
+        <a-card title="⏰ 待办清单" :bordered="false">
+          <a-list :dataSource="todoList" size="small">
+            <template #renderItem="{ item }">
+              <a-list-item>
+                <a-list-item-meta>
+                  <template #title>
+                    <a-space>
+                      <a-tag color="blue">{{ item.todo_type }}</a-tag>
+                      <span>{{ item.title }}</span>
+                    </a-space>
+                  </template>
+                  <template #description>
+                    <span style="font-size:12px; color:#999">{{ item.expo_name || '-' }} · {{ item.time_at?.slice(0, 10) }}</span>
+                  </template>
+                </a-list-item-meta>
+                <a-button size="small" type="link" @click="goTodo(item.todo_type)">去处理</a-button>
+              </a-list-item>
+            </template>
+            <template #footer v-if="!todoList.length">
+              <div style="text-align:center; color:#999; font-size:12px">当前暂无待办任务</div>
+            </template>
+          </a-list>
+        </a-card>
+      </a-col>
+    </a-row>
+
     <!-- 图表区 -->
     <a-row :gutter="16" style="margin-bottom: 16px">
       <a-col :xs="24" :md="14">
@@ -69,12 +127,16 @@ import { ref, onMounted, computed } from 'vue'
 import * as echarts from 'echarts'
 import api from '@/api'
 import dayjs from 'dayjs'
+import { useRouter } from 'vue-router'
 import {
   CalendarOutlined, TeamOutlined, ShopOutlined, CreditCardOutlined,
 } from '@ant-design/icons-vue'
 
+const router = useRouter()
 const stats = ref<any>({})
 const recentCheckins = ref([])
+const todoSummary = ref<any>({})
+const todoList = ref<any[]>([])
 const trendChartRef = ref<HTMLElement>()
 const boothChartRef = ref<HTMLElement>()
 const expoChartRef = ref<HTMLElement>()
@@ -110,6 +172,8 @@ async function loadData() {
     kpiCards[3].sub = `待收 ${Number(data.payments.pending_amount).toLocaleString()}元`
 
     recentCheckins.value = data.recentCheckins
+    todoSummary.value = data.todos?.summary || {}
+    todoList.value = data.todos?.list || []
 
     // 趋势图
     if (trendChartRef.value) {
@@ -173,5 +237,47 @@ async function loadData() {
   } catch { /* 错误已由 axios 处理 */ }
 }
 
+function goTodo(type: string) {
+  if (type === '参展商审核') {
+    router.push('/exhibitors')
+    return
+  }
+  if (type === '订单催缴') {
+    router.push('/payments')
+    return
+  }
+  if (type === '合同催签') {
+    router.push('/contracts')
+    return
+  }
+  router.push('/dashboard')
+}
+
 onMounted(loadData)
 </script>
+
+<style scoped>
+.todo-card {
+  padding: 14px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-bottom: 8px;
+}
+
+.todo-card:hover {
+  transform: translateY(-2px);
+}
+
+.todo-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: #1677ff;
+}
+
+.todo-label {
+  font-size: 12px;
+  color: #666;
+  margin-top: 4px;
+}
+</style>

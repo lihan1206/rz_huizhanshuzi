@@ -72,6 +72,39 @@ router.get('/dashboard', async (_req: AuthRequest, res: Response) => {
         // 消息未读数
         const [unreadMsg]: any = await db.query(`SELECT COUNT(*) as cnt FROM messages WHERE is_read=0`);
 
+        // 运营待办
+        const [todoSummary]: any = await db.query(`
+      SELECT
+        (SELECT COUNT(*) FROM exhibitors WHERE status='待审核') as pending_exhibitor_review,
+        (SELECT COUNT(*) FROM payments WHERE status='待支付') as pending_payments,
+        (SELECT COUNT(*) FROM contracts WHERE status='待签署') as pending_contracts,
+        (SELECT COUNT(*) FROM booths b LEFT JOIN expos e ON b.expo_id=e.id WHERE b.status='空闲' AND e.status='进行中') as free_booths_in_ongoing_expo
+    `);
+        const [todoList]: any = await db.query(`
+      SELECT '参展商审核' as todo_type, ex.id as ref_id, ex.company_name as title, e.name as expo_name, ex.created_at as time_at
+      FROM exhibitors ex
+      LEFT JOIN expos e ON ex.expo_id = e.id
+      WHERE ex.status='待审核'
+      ORDER BY ex.created_at ASC
+      LIMIT 3
+    `);
+        const [pendingPaymentList]: any = await db.query(`
+      SELECT '订单催缴' as todo_type, p.id as ref_id, p.order_no as title, e.name as expo_name, p.created_at as time_at
+      FROM payments p
+      LEFT JOIN expos e ON p.expo_id = e.id
+      WHERE p.status='待支付'
+      ORDER BY p.created_at ASC
+      LIMIT 3
+    `);
+        const [pendingContractList]: any = await db.query(`
+      SELECT '合同催签' as todo_type, c.id as ref_id, COALESCE(c.contract_no, c.title) as title, e.name as expo_name, c.created_at as time_at
+      FROM contracts c
+      LEFT JOIN expos e ON c.expo_id = e.id
+      WHERE c.status='待签署'
+      ORDER BY c.created_at ASC
+      LIMIT 3
+    `);
+
         res.json({
             success: true,
             data: {
@@ -83,6 +116,10 @@ router.get('/dashboard', async (_req: AuthRequest, res: Response) => {
                 trends: { visitorTrend, expoExhibitors, boothTypes },
                 recentCheckins,
                 unreadMessages: unreadMsg[0].cnt,
+                todos: {
+                    summary: todoSummary[0],
+                    list: [...todoList, ...pendingPaymentList, ...pendingContractList].sort((a: any, b: any) => new Date(a.time_at).getTime() - new Date(b.time_at).getTime())
+                }
             }
         });
     } catch (err: any) { res.status(500).json({ success: false, message: err.message }); }

@@ -20,7 +20,8 @@
           </template>
           <template v-if="column.key === 'action'">
             <div class="action-btns">
-              <a-button size="small" type="primary" ghost @click="signContract(record)" v-if="record.status === '待签署'">签署</a-button>
+              <a-button size="small" type="primary" ghost @click="signContract(record)" v-if="authStore.isAdminOrOperator && record.status === '待签署'">签署</a-button>
+              <a-button size="small" @click="remindContract(record)" v-if="authStore.isAdminOrOperator && record.status === '待签署'">催签</a-button>
             </div>
           </template>
         </template>
@@ -70,7 +71,7 @@ const columns = [
   { title: '所属会展', dataIndex: 'expo_name', ellipsis: true },
   { title: '状态', key: 'status', width: 90 },
   { title: '签署时间', dataIndex: 'signed_at', width: 130, customRender: ({ text }: any) => text?.slice(0,10) || '-' },
-  { title: '操作', key: 'action', width: 100 },
+  { title: '操作', key: 'action', width: 160 },
 ]
 async function loadList() {
   loading.value = true
@@ -89,6 +90,10 @@ async function handleSubmit() {
 function signContract(record: any) {
   Modal.confirm({ title: '确认签署合同', content: `确认签署合同「${record.title}」吗？签署后不可撤销。`, okText: '确认签署', cancelText: '取消',
     async onOk() { await api.patch(`/payments/contracts/${record.id}/sign`, {}); message.success('合同已签署'); loadList() } })
+}
+async function remindContract(record: any) {
+  await api.post(`/payments/contracts/${record.id}/remind`, {})
+  message.success('催签提醒已发送')
 }
 async function loadExpos() { const res = await api.get('/expos', { params: { pageSize: 100 } }); expos.value = res.data.data.list }
 async function loadExhibitors() { const res = await api.get('/exhibitors', { params: { pageSize: 100 } }); exhibitors.value = res.data.data.list }

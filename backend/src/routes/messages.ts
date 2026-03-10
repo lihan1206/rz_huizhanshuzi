@@ -6,14 +6,26 @@ import { logger } from '../utils/logger';
 const router = Router();
 router.use(authMiddleware);
 
+function appendRoleVisibility(where: string, params: any[], role: string | undefined, alias = 'm') {
+    if (!role || ['admin', 'operator'].includes(role)) return where;
+    where += ` AND (${alias}.target_role IS NULL OR ${alias}.target_role = '' OR ${alias}.target_role = ?)`;
+    params.push(role);
+    return where;
+}
+
 // 获取消息列表
 router.get('/', async (req: AuthRequest, res: Response) => {
     try {
-        const { type, is_read, page = 1, pageSize = 10 } = req.query;
+        const { type, is_read, keyword, page = 1, pageSize = 10 } = req.query;
         let where = 'WHERE 1=1';
         const params: any[] = [];
         if (type) { where += ' AND m.type = ?'; params.push(type); }
         if (is_read !== undefined && is_read !== '') { where += ' AND m.is_read = ?'; params.push(is_read); }
+        if (keyword) {
+            where += ' AND (m.title LIKE ? OR m.content LIKE ?)';
+            params.push(`%${keyword}%`, `%${keyword}%`);
+        }
+        where = appendRoleVisibility(where, params, req.user?.role, 'm');
         const offset = (Number(page) - 1) * Number(pageSize);
         const [rows]: any = await db.query(
             `SELECT m.*, u.real_name as sender_name, e.name as expo_name FROM messages m 
@@ -22,7 +34,10 @@ router.get('/', async (req: AuthRequest, res: Response) => {
             [...params, Number(pageSize), offset]
         );
         const [total]: any = await db.query(`SELECT COUNT(*) as cnt FROM messages m ${where}`, params);
-        const [unread]: any = await db.query('SELECT COUNT(*) as cnt FROM messages WHERE is_read=0');
+        const unreadWhereParams: any[] = [];
+        let unreadWhere = 'WHERE m.is_read=0';
+        unreadWhere = appendRoleVisibility(unreadWhere, unreadWhereParams, req.user?.role, 'm');
+        const [unread]: any = await db.query(`SELECT COUNT(*) as cnt FROM messages m ${unreadWhere}`, unreadWhereParams);
         res.json({ success: true, data: { list: rows, total: total[0].cnt, unread: unread[0].cnt } });
     } catch (err: any) { res.status(500).json({ success: false, message: err.message }); }
 });
@@ -44,15 +59,27 @@ router.post('/', adminOrOperator, async (req: AuthRequest, res: Response) => {
 // 标记已读
 router.patch('/:id/read', async (req: AuthRequest, res: Response) => {
     try {
-        await db.query('UPDATE messages SET is_read=1 WHERE id=?', [req.params.id]);
+        const params: any[] = [req.params.id];
+        let sql = 'UPDATE messages m SET is_read=1 WHERE m.id=?';
+        if (!['admin', 'operator'].includes(req.user?.role || '')) {
+            sql += ` AND (m.target_role IS NULL OR m.target_role = '' OR m.target_role = ?)`;
+            params.push(req.user?.role);
+        }
+        const [result]: any = await db.query(sql, params);
+        if (!result.affectedRows) {
+            return res.status(404).json({ success: false, message: '消息不存在或无权限操作' });
+        }
         res.json({ success: true, message: '已标记为已读' });
     } catch (err: any) { res.status(500).json({ success: false, message: err.message }); }
 });
 
 // 全部标为已读
-router.patch('/read-all', async (_req: AuthRequest, res: Response) => {
+router.patch('/read-all', async (req: AuthRequest, res: Response) => {
     try {
-        await db.query('UPDATE messages SET is_read=1 WHERE is_read=0');
+        const params: any[] = [];
+        let where = 'WHERE m.is_read=0';
+        where = appendRoleVisibility(where, params, req.user?.role, 'm');
+        await db.query(`UPDATE messages m SET m.is_read=1 ${where}`, params);
         res.json({ success: true, message: '全部标记为已读' });
     } catch (err: any) { res.status(500).json({ success: false, message: err.message }); }
 });
